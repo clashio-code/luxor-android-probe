@@ -1,0 +1,257 @@
+name: build-armhf
+on:
+  workflow_dispatch:
+  push:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pasang toolchain ARM 32-bit
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-linux-gnueabihf
+
+      - name: Tulis sumber
+        run: |
+          mkdir -p src out/luxor_android/libs
+          cat > src/elfprobe.c <<'EOF_C'
+          /* elfprobe - Milestone 1 port Luxor Android (armhf, muOS).
+           * HANYA MEMBACA: mem-parse libmain.so + libfmodex.so (ELF32 ARM), lalu cek tiap simbol impor
+           * terhadap library 32-bit milik device (glibc, Mali GLES/EGL, gl4es). Tidak menjalankan kode game. */
+          #define _GNU_SOURCE
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <stdint.h>
+          #include <stdarg.h>
+          #include <elf.h>
+          #include <dlfcn.h>
+          #include <fcntl.h>
+          #include <unistd.h>
+          #include <sys/mman.h>
+          #include <sys/stat.h>
+          #include <sys/utsname.h>
+          #include <gnu/libc-version.h>
+
+          #define MAXN 2048
+
+          typedef struct {
+            const uint8_t *map; size_t size;
+            const Elf32_Ehdr *eh; const Elf32_Shdr *sh;
+            const Elf32_Sym *sym; int nsym; const char *str;
+            const Elf32_Dyn *dyn; int ndyn;
+          } Lib;
+
+          static FILE *rep;
+
+          static void P(const char *fmt, ...) {
+            va_list ap;
+            va_start(ap, fmt); vprintf(fmt, ap); va_end(ap);
+            if (rep) { va_start(ap, fmt); vfprintf(rep, fmt, ap); va_end(ap); }
+          }
+
+          static int load_lib(const char *path, Lib *L) {
+            struct stat st;
+            int fd, i;
+            memset(L, 0, sizeof *L);
+            fd = open(path, O_RDONLY);
+            if (fd < 0) { P("GAGAL membuka %s\n", path); return -1; }
+            if (fstat(fd, &st) != 0) { close(fd); return -1; }
+            L->size = (size_t)st.st_size;
+            L->map = mmap(NULL, L->size, PROT_READ, MAP_PRIVATE, fd, 0);
+            close(fd);
+            if (L->map == MAP_FAILED) { P("GAGAL mmap %s\n", path); return -1; }
+            if (L->size < sizeof(Elf32_Ehdr) || memcmp(L->map, ELFMAG, SELFMAG) != 0) { P("%s bukan file ELF\n", path); return -1; }
+            L->eh = (const Elf32_Ehdr *)L->map;
+            if (L->eh->e_ident[EI_CLASS] != ELFCLASS32 || L->eh->e_machine != EM_ARM) {
+              P("%s bukan ELF ARM 32-bit (class=%d machine=%d)\n", path, L->eh->e_ident[EI_CLASS], L->eh->e_machine);
+              return -1;
+            }
+            if (L->eh->e_shoff == 0 || L->eh->e_shentsize != sizeof(Elf32_Shdr) ||
+                (size_t)L->eh->e_shoff + (size_t)L->eh->e_shnum * sizeof(Elf32_Shdr) > L->size) {
+              P("%s: section header tidak ada/rusak\n", path); return -1;
+            }
+            L->sh = (const Elf32_Shdr *)(L->map + L->eh->e_shoff);
+            for (i = 0; i < L->eh->e_shnum; i++) {
+              const Elf32_Shdr *s = &L->sh[i];
+              if ((size_t)s->sh_offset + s->sh_size > L->size) continue;
+              if (s->sh_type == SHT_DYNSYM) {
+                L->sym = (const Elf32_Sym *)(L->map + s->sh_offset);
+                L->nsym = (int)(s->sh_size / sizeof(Elf32_Sym));
+                if (s->sh_link < L->eh->e_shnum) L->str = (const char *)(L->map + L->sh[s->sh_link].sh_offset);
+              } else if (s->sh_type == SHT_DYNAMIC) {
+                L->dyn = (const Elf32_Dyn *)(L->map + s->sh_offset);
+                L->ndyn = (int)(s->sh_size / sizeof(Elf32_Dyn));
+              }
+            }
+            if (!L->sym || !L->str) { P("%s: .dynsym tidak ditemukan\n", path); return -1; }
+            return 0;
+          }
+
+          static void print_needed(const Lib *L) {
+            int i;
+            for (i = 0; i < L->ndyn; i++) {
+              if (L->dyn[i].d_tag == DT_NEEDED) P("  NEEDED %s\n", L->str + L->dyn[i].d_un.d_val);
+              else if (L->dyn[i].d_tag == DT_SONAME) P("  SONAME %s\n", L->str + L->dyn[i].d_un.d_val);
+            }
+          }
+
+          static int has_export(const Lib *L, const char *name) {
+            int i;
+            for (i = 1; i < L->nsym; i++) {
+              const Elf32_Sym *s = &L->sym[i];
+              if (s->st_shndx != SHN_UNDEF && s->st_name && strcmp(L->str + s->st_name, name) == 0) return 1;
+            }
+            return 0;
+          }
+
+          /* simbol yang ada di glibc tapi layout/ABI-nya BEDA dari bionic (Android) -> perlu pembungkus */
+          static int abi_risky(const char *n) {
+            static const char *pfx[] = { "pthread_", "sem_", "stat", "fstat", "lstat", "readdir", "scandir",
+              "opendir", "closedir", "setjmp", "longjmp", "_setjmp", "_longjmp", "sigsetjmp", "siglongjmp",
+              "sigaction", "signal", "sigprocmask", "dlopen", "dlsym", "dlclose", "dlerror", NULL };
+            int i;
+            for (i = 0; pfx[i]; i++) if (strncmp(n, pfx[i], strlen(pfx[i])) == 0) return 1;
+            return 0;
+          }
+
+          static void *try_open(const char *p) {
+            void *h = dlopen(p, RTLD_LAZY | RTLD_LOCAL);
+            P("  dlopen %-36s : %s\n", p, h ? "OK" : dlerror());
+            return h;
+          }
+
+          typedef struct { const char *name[MAXN]; int n; } List;
+          static void add(List *l, const char *s) { if (l->n < MAXN) l->name[l->n++] = s; }
+          static void dump(const char *title, const List *l) {
+            int i;
+            P("\n-- %s (%d)\n", title, l->n);
+            for (i = 0; i < l->n; i++) P("  %s\n", l->name[i]);
+          }
+
+          static void classify(const Lib *L, const Lib *fm, const char *label, void *h_gles, void *h_mali, void *h_gl4es) {
+            List fmod = {{0}, 0}, ok = {{0}, 0}, risky = {{0}, 0}, gl = {{0}, 0}, miss = {{0}, 0};
+            int i, nimp = 0;
+            P("\n=== %s: klasifikasi simbol impor ===\n", label);
+            for (i = 1; i < L->nsym; i++) {
+              const Elf32_Sym *s = &L->sym[i];
+              const char *n;
+              if (s->st_shndx != SHN_UNDEF || !s->st_name) continue;
+              n = L->str + s->st_name;
+              nimp++;
+              if (fm && has_export(fm, n)) { add(&fmod, n); continue; }
+              if (dlsym(RTLD_DEFAULT, n)) { if (abi_risky(n)) add(&risky, n); else add(&ok, n); continue; }
+              if ((h_gles && dlsym(h_gles, n)) || (h_mali && dlsym(h_mali, n)) || (h_gl4es && dlsym(h_gl4es, n))) { add(&gl, n); continue; }
+              add(&miss, n);
+            }
+            P("total impor=%d | dari libfmodex=%d | ada di glibc (aman)=%d | ada di glibc tapi ABI beda=%d | ada di GL device=%d | TIDAK ADA=%d\n",
+              nimp, fmod.n, ok.n, risky.n, gl.n, miss.n);
+            dump("ABI-RISK: ada di glibc tapi perlu pembungkus", &risky);
+            dump("TIDAK ADA: perlu shim/implementasi sendiri", &miss);
+          }
+
+          static void gl_report(const Lib *L, void *h_gles, void *h_mali, void *h_gl4es) {
+            int i, total = 0, okm = 0;
+            P("\n=== fungsi GL/EGL yang dipakai libmain.so ===\n");
+            P("  huruf: C=libGLESv1_CM  M=libmali  G=gl4es  (-=tidak ada)\n");
+            for (i = 1; i < L->nsym; i++) {
+              const Elf32_Sym *s = &L->sym[i];
+              const char *n;
+              int c, m, g;
+              if (s->st_shndx != SHN_UNDEF || !s->st_name) continue;
+              n = L->str + s->st_name;
+              if (strncmp(n, "gl", 2) != 0 && strncmp(n, "egl", 3) != 0) continue;
+              c = h_gles && dlsym(h_gles, n); m = h_mali && dlsym(h_mali, n); g = h_gl4es && dlsym(h_gl4es, n);
+              total++; if (c || m) okm++;
+              P("  %c%c%c %s\n", c ? 'C' : '-', m ? 'M' : '-', g ? 'G' : '-', n);
+            }
+            P("ringkas: %d fungsi GL/EGL dipakai, %d tersedia langsung di libGLESv1_CM/libmali\n", total, okm);
+          }
+
+          int main(int argc, char **argv) {
+            Lib main_lib, fm_lib;
+            struct utsname u;
+            void *h_gles, *h_mali, *h_gl4es, *h_egl;
+            int i, njni = 0;
+
+            if (argc < 3) { fprintf(stderr, "pakai: %s libmain.so libfmodex.so [report.txt]\n", argv[0]); return 2; }
+            if (argc > 3) rep = fopen(argv[3], "w");
+
+            P("== elfprobe (Luxor Android, Milestone 1) ==\n");
+            if (uname(&u) == 0) P("device: %s %s %s\n", u.sysname, u.release, u.machine);
+            P("glibc: %s\n", gnu_get_libc_version());
+
+            /* muat runtime umum supaya dlsym(RTLD_DEFAULT) mewakili apa yang tersedia untuk game */
+            dlopen("libm.so.6", RTLD_NOW | RTLD_GLOBAL);
+            dlopen("libgcc_s.so.1", RTLD_NOW | RTLD_GLOBAL);
+            dlopen("libstdc++.so.6", RTLD_NOW | RTLD_GLOBAL);
+
+            P("\n== library grafik 32-bit di device ==\n");
+            h_gles = try_open("/usr/lib32/libGLESv1_CM.so.1");
+            h_mali = try_open("/usr/lib32/libmali.so");
+            h_egl  = try_open("/usr/lib32/libEGL.so.1");
+            h_gl4es = try_open("/usr/lib32/gl4es/libGL.so.1");
+            if (h_egl) P("  eglGetProcAddress: %s | eglGetDisplay: %s\n",
+                         dlsym(h_egl, "eglGetProcAddress") ? "ada" : "TIDAK", dlsym(h_egl, "eglGetDisplay") ? "ada" : "TIDAK");
+
+            P("\n== libmain.so ==\n");
+            if (load_lib(argv[1], &main_lib) != 0) return 1;
+            print_needed(&main_lib);
+            for (i = 1; i < main_lib.nsym; i++) {
+              const Elf32_Sym *s = &main_lib.sym[i];
+              const char *n;
+              if (s->st_shndx == SHN_UNDEF || !s->st_name) continue;
+              n = main_lib.str + s->st_name;
+              if (strncmp(n, "Java_", 5) == 0 || strcmp(n, "JNI_OnLoad") == 0) njni++;
+            }
+            P("  titik masuk JNI terekspor: %d (termasuk JNI_OnLoad jika ada)\n", njni);
+
+            P("\n== libfmodex.so ==\n");
+            if (load_lib(argv[2], &fm_lib) != 0) return 1;
+            print_needed(&fm_lib);
+            P("  simbol terekspor: %d\n", fm_lib.nsym - 1);
+
+            classify(&main_lib, &fm_lib, "libmain.so", h_gles, h_mali, h_gl4es);
+            classify(&fm_lib, NULL, "libfmodex.so", h_gles, h_mali, h_gl4es);
+            gl_report(&main_lib, h_gles, h_mali, h_gl4es);
+
+            P("\n== selesai ==\n");
+            if (rep) fclose(rep);
+            return 0;
+          }
+          EOF_C
+          cat > out/LuxorProbe.sh <<'EOF_SH'
+          #!/bin/bash
+          # Probe Luxor Android (Milestone 1). Hanya membaca, tidak mengubah apa pun.
+          DIR="$(cd "$(dirname "$0")" && pwd)/luxor_android"
+          cd "$DIR" || exit 1
+          export LD_LIBRARY_PATH="/usr/lib32:/lib32:${LD_LIBRARY_PATH}"
+          chmod +x ./elfprobe 2>/dev/null
+          if [ ! -f libs/libmain.so ] || [ ! -f libs/libfmodex.so ]; then
+            echo "libs/libmain.so dan libs/libfmodex.so belum ada. Ekstrak dari lib/armeabi-v7a di APK." > probe_report.txt
+            sleep 3
+            exit 1
+          fi
+          ./elfprobe libs/libmain.so libs/libfmodex.so probe_report.txt > probe_stdout.txt 2>&1
+          echo "exit code: $?" >> probe_stdout.txt
+          sleep 2
+          EOF_SH
+          cat > out/luxor_android/libs/TARUH-LIB-DI-SINI.txt <<'EOF_TXT'
+          Taruh libmain.so dan libfmodex.so dari lib/armeabi-v7a di APK Luxor-mu ke folder ini.
+          (file game milikmu sendiri; jangan di-upload ke GitHub)
+          EOF_TXT
+
+      - name: Kompilasi (armhf)
+        run: |
+          arm-linux-gnueabihf-gcc -O2 -Wall -Wextra -o out/luxor_android/elfprobe src/elfprobe.c -ldl
+          file out/luxor_android/elfprobe || true
+          echo "--- library yang dibutuhkan:"
+          arm-linux-gnueabihf-readelf -d out/luxor_android/elfprobe | grep NEEDED
+          echo "--- versi GLIBC tertinggi yang dibutuhkan:"
+          arm-linux-gnueabihf-readelf -V out/luxor_android/elfprobe | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -3
+
+      - name: Unggah hasil build
+        uses: actions/upload-artifact@v4
+        with:
+          name: luxor-probe-armhf
+          path: out
