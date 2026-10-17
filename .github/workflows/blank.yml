@@ -321,6 +321,32 @@ jobs:
               }
           }
 
+          /* jejak pemanggil di kode game: pindai stack, ambil nilai yang jatuh di modul game DAN didahului instruksi panggilan (bl / mov lr,pc) */
+          static void print_game_trace(const char *why) {
+          #if defined(__arm__)
+            const uintptr_t *sp = (const uintptr_t *)__builtin_frame_address(0);
+            int k, shown = 0;
+            L("  [trace] %s (return address game di stack, terdekat dulu):\n", why);
+            for (k = 0; k < 4096 && shown < 40; k++) {
+              uintptr_t v = sp[k]; int i;
+              for (i = 0; i < nmods; i++) {
+                if (v >= (uintptr_t)mods[i].base + 8 && v < (uintptr_t)mods[i].base + mods[i].span && (v & 3u) == 0) {
+                  uint32_t p1 = *(const uint32_t *)(v - 4), p2 = *(const uint32_t *)(v - 8);
+                  int call = ((p1 >> 24) == 0xebu) || ((p1 & 0xfffffff0u) == 0xe12fff30u) || (p2 == 0xe1a0e00fu);
+                  if (call) {
+                    uint32_t d = 0; const char *nm = game_sym(&mods[i], v, &d);
+                    L("    #%d sp+%d: %s + 0x%x  [%s+0x%x]\n", shown, k * 4, mods[i].name, (unsigned)(v - mods[i].bias), nm ? nm : "?", (unsigned)d);
+                    shown++;
+                  }
+                  break;
+                }
+              }
+            }
+          #else
+            (void)why;
+          #endif
+          }
+
           /* cetak baris /proc/self/maps yang memuat alamat a (nama library sistem tempat crash) */
           static void map_of(const char *tag, uintptr_t a) {
             FILE *m = fopen("/proc/self/maps", "r");
@@ -821,6 +847,7 @@ jobs:
             m->count++;
             fmt_args(m, a, args, sizeof args);
             if (jlog_budget > 0 || m->count <= 3) { L("[Java] %s.%s(%s) -> %c\n", m->cls, m->name, args, rt); if (jlog_budget > 0) jlog_budget--; }
+            if (!strcmp(m->name, "terminateActivity")) print_game_trace("terminateActivity dipanggil game");
             if (!strcmp(m->name, "getRawAssetFileOffset") || !strcmp(m->name, "getRawAssetFileLength")) {
               char ent[300]; uint32_t off = 0, len = 0; int method = -1;
               snprintf(ent, sizeof ent, "assets/%s", h2s(a[0].l));
