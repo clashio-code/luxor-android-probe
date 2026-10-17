@@ -1040,6 +1040,7 @@ jobs:
             return 0;
           }
 
+          static void (*g_log_flush)(void);   /* Logger::_flushClients() milik game: kosongkan buffer log game ke __android_log_print */
           static void *mod_find(const Mod *m, const char *name) {
             int i;
             for (i = 1; i < m->nsym; i++) {
@@ -1284,6 +1285,8 @@ jobs:
               boot_fn f_boot = (boot_fn)mod_find(mn, "Java_com_mumbojumbo_mj2_MJ2JNILib_bootstrap");
               init_fn f_init = (init_fn)mod_find(mn, "Java_com_mumbojumbo_mj2_MJ2JNILib_initialize");
               frame_fn f_frame = (frame_fn)mod_find(mn, "Java_com_mumbojumbo_mj2_MJ2JNILib_singleFrame");
+              *(void **)&g_log_flush = mod_find(mn, "_ZN6Logger13_flushClientsEv");
+              L("[log] Logger::_flushClients: %s\n", g_log_flush ? "ada" : "TIDAK ADA (log game tidak bisa di-flush)");
               void *env = (void *)&g_envobj, *cls = mk_handle("class", "com/mumbojumbo/mj2/MJ2JNILib");
               void *act = mk_obj("com/mumbojumbo/mj2/MJ2Activity");
               int w = 640, h = 480, f, quit = 0, nerr = 0;
@@ -1300,7 +1303,7 @@ jobs:
 
               L("\n== bootstrap(activity, \"%s\", \"%s\", \"%s\") ==\n", apk_abs, files_dir, ext_dir);
               f_boot(env, cls, act, mk_handle("string", apk_abs), mk_handle("string", files_dir), mk_handle("string", ext_dir));
-              L("bootstrap selesai\n");
+              L("bootstrap selesai\n"); if (g_log_flush) g_log_flush();
 
               if (stage >= 2) {
                 L("\n== membuat jendela + konteks GLES1 ==\n");
@@ -1308,6 +1311,7 @@ jobs:
                 L("\n== initialize(%d, %d) ==\n", w, h);
                 f_init(env, cls, w, h);
                 L("initialize selesai\n");
+                if (g_log_flush) g_log_flush();
               }
 
               if (stage >= 3) {
@@ -1321,11 +1325,13 @@ jobs:
                     if (t == 0x300u) { int32_t sym; memcpy(&sym, ev + 20, 4); if (sym == 27) quit = 1; }
                   }
                   f_frame(env, cls);
+                  if (g_log_flush && (f < 10 || f % 30 == 0)) g_log_flush();
                   p_SDL_GL_SwapWindow(g_win);
                   err = p_glGetError ? p_glGetError() : 0;
                   if (err && nerr < 10) { L("[gl] glGetError=0x%x pada frame %d\n", err, f); nerr++; }
                   if (f < 5 || f % 30 == 0) L("[frame] %d selesai\n", f);
                 }
+                if (g_log_flush) g_log_flush();
                 L("\n== %d frame selesai ==\n", f);
               }
 
