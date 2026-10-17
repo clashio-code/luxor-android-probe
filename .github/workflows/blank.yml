@@ -315,7 +315,12 @@ jobs:
             if (!m) return;
             while (fgets(ln, sizeof ln, m)) {
               unsigned long lo, hi;
-              if (sscanf(ln, "%lx-%lx", &lo, &hi) == 2 && a >= lo && a < hi) {
+              const char *q = ln; lo = 0; hi = 0;
+              /* parse hex manual: sscanf/strtoul di glibc build >=2.38 terikat ke simbol GLIBC_2.38, device cuma 2.37 */
+              while ((*q >= '0' && *q <= '9') || (*q >= 'a' && *q <= 'f')) lo = lo * 16 + (unsigned long)(*q <= '9' ? *q - '0' : *q - 'a' + 10), q++;
+              if (*q == '-') q++;
+              while ((*q >= '0' && *q <= '9') || (*q >= 'a' && *q <= 'f')) hi = hi * 16 + (unsigned long)(*q <= '9' ? *q - '0' : *q - 'a' + 10), q++;
+              if (hi && a >= lo && a < hi) {
                 char *nl = strchr(ln, '\n'); if (nl) *nl = 0;
                 L("    %s in map: %s  (offset di map = 0x%lx)\n", tag, ln, (unsigned long)(a - lo));
                 break;
