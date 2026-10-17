@@ -1212,7 +1212,9 @@ jobs:
               if (!f_boot || !f_init || !f_frame) { L("fungsi native tidak lengkap\n"); return 1; }
 
               if (!getcwd(cwd, sizeof cwd)) snprintf(cwd, sizeof cwd, ".");
-              if (!realpath(g_apk, apk_abs)) snprintf(apk_abs, sizeof apk_abs, "%s/%s", cwd, g_apk);
+              { char *rp = realpath(g_apk, NULL); /* NULL: realpath(buf kecil) memicu abort _FORTIFY_SOURCE */
+                if (rp) { snprintf(apk_abs, sizeof apk_abs, "%s", rp); free(rp); }
+                else snprintf(apk_abs, sizeof apk_abs, "%s/%s", cwd, g_apk); }
               snprintf(files_dir, sizeof files_dir, "%s/files", cwd); snprintf(ext_dir, sizeof ext_dir, "%s/ext", cwd);
               mkdir(files_dir, 0755); mkdir(ext_dir, 0755);
 
