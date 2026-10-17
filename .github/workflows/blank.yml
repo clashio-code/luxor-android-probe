@@ -325,6 +325,8 @@ jobs:
           /* --- ctype / stdio bionic --- */
           static char bionic_ctype[1 + 256];
           static int16_t bionic_tolower[1 + 256], bionic_toupper[1 + 256];
+          /* bionic: _tolower_tab_/_toupper_tab_ adalah VARIABEL POINTER (const short *), bukan array. Kode game: ldr r1,[sym]; ldrsh [r1+2c+2]. */
+          static const int16_t *p_tolower = bionic_tolower, *p_toupper = bionic_toupper;
           static char bionic_sF[3 * 84];
 
           static void init_tables(void) {
@@ -547,7 +549,7 @@ jobs:
             {"__android_log_write", (void *)b_android_log_write}, {"__assert2", (void *)b_assert2},
             {"__aeabi_atexit", (void *)b_aeabi_atexit}, {"__register_frame_info", (void *)b_register_frame_info},
             {"__deregister_frame_info", (void *)b_deregister_frame_info}, {"_Jv_RegisterClasses", (void *)b_jv_register},
-            {"__stack_chk_guard", &b_stack_chk_guard}, {"__sF", bionic_sF}, {"_ctype_", bionic_ctype}, {"_tolower_tab_", bionic_tolower}, {"_toupper_tab_", bionic_toupper},
+            {"__stack_chk_guard", &b_stack_chk_guard}, {"__sF", bionic_sF}, {"_ctype_", bionic_ctype}, {"_tolower_tab_", &p_tolower}, {"_toupper_tab_", &p_toupper},
             {"__srget", (void *)b_srget}, {"__swbuf", (void *)b_swbuf},
             {"fprintf", (void *)b_fprintf}, {"vfprintf", (void *)b_vfprintf}, {"fputs", (void *)b_fputs}, {"fputc", (void *)b_fputc},
             {"putc", (void *)b_fputc}, {"fwrite", (void *)b_fwrite}, {"fread", (void *)b_fread}, {"fflush", (void *)b_fflush},
@@ -1113,12 +1115,13 @@ jobs:
           /* ======================= uji mandiri ======================= */
           static int st_va(const char *sig, ...) { va_list ap; jv a[16]; int n; va_start(ap, sig); n = collect_va(sig, ap, a); va_end(ap);
             return n == 6 && a[0].i == -5 && a[1].j == 0x123456789aLL && a[2].l == (void *)0x1234 && a[3].i == 7 && a[4].d > 2.49 && a[4].d < 2.51 && a[5].f > 1.49f && a[5].f < 1.51f; }
+          static const void *shim_addr(const char *n) { int i; for (i = 0; shim[i].name; i++) if (!strcmp(shim[i].name, n)) return shim[i].addr; return NULL; }
           static int selftest(void) {
             int ok = 1; uint32_t off = 0, len = 0; int method = -1;
             L("== selftest ==\n");
             if (st_va("(IJLjava/lang/String;ZDF)V", -5, 0x123456789aLL, (void *)0x1234, 7, 2.5, 1.5)) L("  collect_va: LULUS\n"); else { L("  collect_va: GAGAL\n"); ok = 0; }
             if (sig_nargs("(IJ[ILjava/lang/String;[[Ljava/lang/Object;)V") == 5) L("  sig_nargs: LULUS\n"); else { L("  sig_nargs: GAGAL\n"); ok = 0; }
-            if ((bionic_ctype[1 + 'A'] & 0x41) == 0x41 && (bionic_ctype[1 + '5'] & 0x44) == 0x44 && (bionic_ctype[1 + ' '] & 0x88) == 0x88 && bionic_tolower[1 + 'Q'] == 'q') L("  ctype/tolower: LULUS\n"); else { L("  ctype/tolower: GAGAL\n"); ok = 0; }
+            if ((bionic_ctype[1 + 'A'] & 0x41) == 0x41 && (bionic_ctype[1 + '5'] & 0x44) == 0x44 && (bionic_ctype[1 + ' '] & 0x88) == 0x88 && (*(const int16_t * const *)shim_addr("_tolower_tab_"))[1 + 'Q'] == 'q') L("  ctype/tolower: LULUS\n"); else { L("  ctype/tolower: GAGAL\n"); ok = 0; }
             if (apk_find(g_apk, "assets/data.mjz", &off, &len, &method) == 0) L("  apk_find(assets/data.mjz): offset=%u panjang=%u method=%d\n", off, len, method);
             else L("  apk_find: tidak dicoba/gagal (APK: %s)\n", g_apk);
             L("== selftest %s ==\n", ok ? "SEMUA LULUS" : "ADA YANG GAGAL");
