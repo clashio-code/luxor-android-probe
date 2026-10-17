@@ -1,4 +1,4 @@
-name: build-armhf
+name: build-armhf-luxor-diagnostic
 on:
   workflow_dispatch:
   push:
@@ -849,13 +849,28 @@ jobs:
             if (jlog_budget > 0 || m->count <= 3) { L("[Java] %s.%s(%s) -> %c\n", m->cls, m->name, args, rt); if (jlog_budget > 0) jlog_budget--; }
             if (!strcmp(m->name, "terminateActivity")) print_game_trace("terminateActivity dipanggil game");
             if (!strcmp(m->name, "getRawAssetFileOffset") || !strcmp(m->name, "getRawAssetFileLength")) {
-              char ent[300]; uint32_t off = 0, len = 0; int method = -1;
-              snprintf(ent, sizeof ent, "assets/%s", h2s(a[0].l));
-              if (apk_find(g_apk, ent, &off, &len, &method) == 0) {
-                if (method != 0) L("[asset] PERINGATAN: %s terkompresi (method %d); native tidak bisa membaca langsung\n", ent, method);
-                r->j = !strcmp(m->name, "getRawAssetFileOffset") ? (int64_t)off : (int64_t)len;
-                if (m->count <= 5) L("[asset] %s -> offset=%u panjang=%u\n", ent, off, len);
-              } else { L("[asset] TIDAK ADA di APK (%s): %s\n", g_apk, ent); r->j = -1; }
+              const char *arg = h2s(a[0].l);
+              char ent[512]; uint32_t off = 0, len = 0; int method = -1;
+              /* Absolute filesystem paths are not APK asset names. */
+              if (arg[0] == '/') {
+                struct stat st;
+                if (stat(arg, &st) == 0) {
+                  if (m->count <= 8) L("[asset] path filesystem ADA: %s (size=%lld); bukan entri APK, return -1\n", arg, (long long)st.st_size);
+                } else {
+                  if (m->count <= 8) L("[asset] path filesystem TIDAK ADA: %s (errno=%d); bukan entri APK, return -1\n", arg, errno);
+                }
+                r->j = -1;
+              } else {
+                snprintf(ent, sizeof ent, "assets/%s", arg);
+                if (apk_find(g_apk, ent, &off, &len, &method) == 0) {
+                  if (method != 0) L("[asset] PERINGATAN: %s terkompresi (method %d); native tidak bisa membaca langsung\n", ent, method);
+                  r->j = !strcmp(m->name, "getRawAssetFileOffset") ? (int64_t)off : (int64_t)len;
+                  if (m->count <= 5) L("[asset] %s -> offset=%u panjang=%u method=%d\n", ent, off, len, method);
+                } else {
+                  if (m->count <= 8) L("[asset] TIDAK ADA di APK (%s): %s\n", g_apk, ent);
+                  r->j = -1;
+                }
+              }
             } else if (!strcmp(m->name, "getLanguageCode")) {
               r->l = mk_handle("string", "en");
             } else if (rt == 'L' && rp && !strcmp(rp + 1, "Ljava/lang/String;")) {
