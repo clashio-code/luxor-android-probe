@@ -308,6 +308,21 @@ jobs:
                 L("    -> %s + 0x%x\n", mods[i].name, (unsigned)(a - mods[i].bias));
           }
 
+          /* cetak baris /proc/self/maps yang memuat alamat a (nama library sistem tempat crash) */
+          static void map_of(const char *tag, uintptr_t a) {
+            FILE *m = fopen("/proc/self/maps", "r");
+            char ln[512];
+            if (!m) return;
+            while (fgets(ln, sizeof ln, m)) {
+              unsigned long lo, hi;
+              if (sscanf(ln, "%lx-%lx", &lo, &hi) == 2 && a >= lo && a < hi) {
+                char *nl = strchr(ln, '\n'); if (nl) *nl = 0;
+                L("    %s in map: %s  (offset di map = 0x%lx)\n", tag, ln, (unsigned long)(a - lo));
+                break;
+              }
+            }
+            fclose(m);
+          }
           static void on_sig(int sig, siginfo_t *si, void *ctx) {
             ucontext_t *uc = (ucontext_t *)ctx;
             uintptr_t pc = 0, lr = 0;
@@ -318,6 +333,28 @@ jobs:
           #endif
             L("\n*** SINYAL %d  addr=%p  pc=%p  lr=%p ***\n", sig, si->si_addr, (void *)pc, (void *)lr);
             describe(pc); describe(lr);
+            map_of("pc", pc); map_of("lr", lr);
+          #if defined(__arm__)
+            L("    r0=%08lx r1=%08lx r2=%08lx r3=%08lx r4=%08lx r5=%08lx r6=%08lx r7=%08lx\n",
+              uc->uc_mcontext.arm_r0, uc->uc_mcontext.arm_r1, uc->uc_mcontext.arm_r2, uc->uc_mcontext.arm_r3,
+              uc->uc_mcontext.arm_r4, uc->uc_mcontext.arm_r5, uc->uc_mcontext.arm_r6, uc->uc_mcontext.arm_r7);
+            L("    r8=%08lx r9=%08lx r10=%08lx fp=%08lx ip=%08lx sp=%08lx\n",
+              uc->uc_mcontext.arm_r8, uc->uc_mcontext.arm_r9, uc->uc_mcontext.arm_r10, uc->uc_mcontext.arm_fp,
+              uc->uc_mcontext.arm_ip, uc->uc_mcontext.arm_sp);
+            {
+              /* backtrace kasar: pindai 2048 byte stack, tampilkan nilai yang jatuh di dalam libmain/libfmodex */
+              const uintptr_t *sp = (const uintptr_t *)uc->uc_mcontext.arm_sp;
+              int k, shown = 0;
+              L("  [stack] kandidat return address di game:\n");
+              for (k = 0; k < 512 && shown < 16; k++) {
+                int i;
+                for (i = 0; i < nmods; i++)
+                  if (sp[k] >= (uintptr_t)mods[i].base && sp[k] < (uintptr_t)mods[i].base + mods[i].span) {
+                    L("    sp+%d: %s + 0x%x\n", k * 4, mods[i].name, (unsigned)(sp[k] - mods[i].bias)); shown++; break;
+                  }
+              }
+            }
+          #endif
             _exit(128 + sig);
           }
 
