@@ -505,7 +505,7 @@ jobs:
           AAPCS static float w_truncf(float x) { return truncf(x); }
           AAPCS static float w_powf(float x, float y) { return powf(x, y); }
           AAPCS static float w_atan2f(float x, float y) { return atan2f(x, y); }
-          AAPCS static float w_fmodf(float x, float y) { return fmodf(x, y); }
+          AAPCS static float w_fmodf(float x, float y) { static float (*f)(float, float); if (!f) *(void **)&f = dlsym(RTLD_DEFAULT, "fmodf"); return f(x, y); }
           AAPCS static double w_sin(double x) { return sin(x); }
           AAPCS static double w_cos(double x) { return cos(x); }
           AAPCS static double w_tan(double x) { return tan(x); }
@@ -525,7 +525,7 @@ jobs:
           AAPCS static double w_rint(double x) { return rint(x); }
           AAPCS static double w_pow(double x, double y) { return pow(x, y); }
           AAPCS static double w_atan2(double x, double y) { return atan2(x, y); }
-          AAPCS static double w_fmod(double x, double y) { return fmod(x, y); }
+          AAPCS static double w_fmod(double x, double y) { static double (*f)(double, double); if (!f) *(void **)&f = dlsym(RTLD_DEFAULT, "fmod"); return f(x, y); }
           AAPCS static double w_ldexp(double x, int e) { return ldexp(x, e); }
           AAPCS static float w_ldexpf(float x, int e) { return ldexpf(x, e); }
           AAPCS static double w_frexp(double x, int *e) { return frexp(x, e); }
@@ -1106,6 +1106,8 @@ jobs:
             return 0;
           }
 
+          static int pint(const char *s) { int v = 0; while (*s >= '0' && *s <= '9') v = v * 10 + (*s++ - '0'); return v; }
+
           static void on_alarm(int sig) { (void)sig; L("\n*** WATCHDOG: waktu habis, proses dihentikan ***\n"); _exit(4); }
 
           /* ======================= uji mandiri ======================= */
@@ -1141,9 +1143,9 @@ jobs:
               if (!strcmp(argv[i], "--dry")) dry = 1;
               else if (!strcmp(argv[i], "--selftest")) do_selftest = 1;
               else if (!strcmp(argv[i], "--apk") && i + 1 < argc) snprintf(g_apk, sizeof g_apk, "%s", argv[++i]);
-              else if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = atoi(argv[++i]);
-              else if (!strcmp(argv[i], "--stage") && i + 1 < argc) stage = atoi(argv[++i]);
-              else if (!strcmp(argv[i], "--timeout") && i + 1 < argc) timeout = atoi(argv[++i]);
+              else if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = pint(argv[++i]);
+              else if (!strcmp(argv[i], "--stage") && i + 1 < argc) stage = pint(argv[++i]);
+              else if (!strcmp(argv[i], "--timeout") && i + 1 < argc) timeout = pint(argv[++i]);
               else if (argv[i][0] != '-') dir = argv[i];
             }
             g_log = fopen("loader_log.txt", "w");
@@ -1358,6 +1360,8 @@ jobs:
             exit 1
           fi
 
+          # hapus log lama supaya tidak tertukar dengan hasil run ini
+          rm -f loader_log.txt
           echo "GAMEDIR=$GAMEDIR  mode=@MODE@" > loader_stdout.txt
           [ -f luxor.apk ] || echo "PERINGATAN: luxor.apk tidak ada di $GAMEDIR (salin APK Luxor dan namai luxor.apk)" >> loader_stdout.txt
           LOADER_ARGS="$(cat loader.args 2>/dev/null)"
@@ -1427,8 +1431,15 @@ jobs:
           file out/luxor_android/luxorloader || true
           echo "--- library yang dibutuhkan:"
           arm-linux-gnueabihf-readelf -d out/luxor_android/luxorloader | grep NEEDED
-          echo "--- versi GLIBC tertinggi yang dibutuhkan:"
-          arm-linux-gnueabihf-readelf -V out/luxor_android/luxorloader | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -3
+          for B in elfprobe luxorloader; do
+            MAXV=$(arm-linux-gnueabihf-readelf -V out/luxor_android/$B | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -Vu | tail -1)
+            echo "$B butuh GLIBC tertinggi: $MAXV (device: 2.37)"
+            if [ "$(printf '%s\n%s\n' 2.37 "$MAXV" | sort -V | tail -1)" != "2.37" ]; then
+              echo "GAGAL: $B butuh glibc lebih baru dari 2.37. Simbol penyebab:"
+              arm-linux-gnueabihf-nm -D --undefined-only out/luxor_android/$B | grep -E 'GLIBC_2\.(3[89]|[4-9][0-9])'
+              exit 1
+            fi
+          done
 
       - name: Unggah hasil build
         uses: actions/upload-artifact@v4
