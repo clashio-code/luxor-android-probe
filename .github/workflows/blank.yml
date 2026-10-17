@@ -301,11 +301,24 @@ jobs:
             return 0;
           }
 
+          /* nama fungsi (dynsym) terdekat di modul game untuk alamat a */
+          static const char *game_sym(const Mod *m, uintptr_t a, uint32_t *delta) {
+            uint32_t off = (uint32_t)(a - m->bias), best = 0; const char *nm = NULL; int i;
+            for (i = 1; i < m->nsym; i++) {
+              const Elf32_Sym *y = &m->sym[i];
+              if (y->st_shndx == SHN_UNDEF || !y->st_name || ELF32_ST_TYPE(y->st_info) != STT_FUNC) continue;
+              if ((y->st_value & ~1u) <= off && (y->st_value & ~1u) >= best) { best = y->st_value & ~1u; nm = m->str + y->st_name; }
+            }
+            *delta = off - best;
+            return nm;
+          }
           static void describe(uintptr_t a) {
             int i;
             for (i = 0; i < nmods; i++)
-              if (a >= (uintptr_t)mods[i].base && a < (uintptr_t)mods[i].base + mods[i].span)
-                L("    -> %s + 0x%x\n", mods[i].name, (unsigned)(a - mods[i].bias));
+              if (a >= (uintptr_t)mods[i].base && a < (uintptr_t)mods[i].base + mods[i].span) {
+                uint32_t d = 0; const char *nm = game_sym(&mods[i], a, &d);
+                L("    -> %s + 0x%x  [%s+0x%x]\n", mods[i].name, (unsigned)(a - mods[i].bias), nm ? nm : "?", (unsigned)d);
+              }
           }
 
           /* cetak baris /proc/self/maps yang memuat alamat a (nama library sistem tempat crash) */
@@ -347,15 +360,35 @@ jobs:
               uc->uc_mcontext.arm_r8, uc->uc_mcontext.arm_r9, uc->uc_mcontext.arm_r10, uc->uc_mcontext.arm_fp,
               uc->uc_mcontext.arm_ip, uc->uc_mcontext.arm_sp);
             {
+              Dl_info di; int k;
+              if (dladdr((void *)pc, &di)) L("  [dladdr pc] %s : %s (+0x%x)\n", di.dli_fname ? di.dli_fname : "?", di.dli_sname ? di.dli_sname : "(tak ada simbol ekspor)", di.dli_saddr ? (unsigned)(pc - (uintptr_t)di.dli_saddr) : 0u);
+              if (dladdr((void *)lr, &di)) L("  [dladdr lr] %s : %s (+0x%x)\n", di.dli_fname ? di.dli_fname : "?", di.dli_sname ? di.dli_sname : "(tak ada simbol ekspor)", di.dli_saddr ? (unsigned)(lr - (uintptr_t)di.dli_saddr) : 0u);
+              /* dump byte kode di sekitar pc supaya bisa didisassemble offline (ARM/Thumb) */
+              {
+                const uint8_t *c = (const uint8_t *)((pc & ~1u) - 96);
+                L("  [code] 96 byte sebelum + 32 byte sesudah pc (mulai %p):", (const void *)c);
+                for (k = 0; k < 128; k++) { if (k % 32 == 0) L("\n   "); L("%02x", c[k]); }
+                L("\n");
+              }
+              /* stack mentah 40 kata pertama */
+              {
+                const uintptr_t *sp = (const uintptr_t *)uc->uc_mcontext.arm_sp;
+                L("  [stack mentah]");
+                for (k = 0; k < 40; k++) { if (k % 4 == 0) L("\n   sp+%03d:", k * 4); L(" %08x", (unsigned)sp[k]); }
+                L("\n");
+              }
+            }
+            {
               /* backtrace kasar: pindai 2048 byte stack, tampilkan nilai yang jatuh di dalam libmain/libfmodex */
               const uintptr_t *sp = (const uintptr_t *)uc->uc_mcontext.arm_sp;
               int k, shown = 0;
-              L("  [stack] kandidat return address di game:\n");
+              L("  [stack] kandidat return address di game (bisa sisa lama):\n");
               for (k = 0; k < 512 && shown < 16; k++) {
                 int i;
                 for (i = 0; i < nmods; i++)
                   if (sp[k] >= (uintptr_t)mods[i].base && sp[k] < (uintptr_t)mods[i].base + mods[i].span) {
-                    L("    sp+%d: %s + 0x%x\n", k * 4, mods[i].name, (unsigned)(sp[k] - mods[i].bias)); shown++; break;
+                    uint32_t d = 0; const char *nm = game_sym(&mods[i], sp[k], &d);
+                    L("    sp+%d: %s + 0x%x  [%s+0x%x]\n", k * 4, mods[i].name, (unsigned)(sp[k] - mods[i].bias), nm ? nm : "?", (unsigned)d); shown++; break;
                   }
               }
             }
@@ -369,6 +402,8 @@ jobs:
           static int16_t bionic_tolower[1 + 256], bionic_toupper[1 + 256];
           /* bionic: _tolower_tab_/_toupper_tab_ adalah VARIABEL POINTER (const short *), bukan array. Kode game: ldr r1,[sym]; ldrsh [r1+2c+2]. */
           static const int16_t *p_tolower = bionic_tolower, *p_toupper = bionic_toupper;
+          /* _ctype_ lama bionic juga POINTER (const char *): kode game: ldr r2,[sym]; ldrb [r2+c+1] (terlihat di gvFile::_validName) */
+          static const char *p_ctype = bionic_ctype;
           static char bionic_sF[3 * 84];
 
           static void init_tables(void) {
@@ -591,7 +626,7 @@ jobs:
             {"__android_log_write", (void *)b_android_log_write}, {"__assert2", (void *)b_assert2},
             {"__aeabi_atexit", (void *)b_aeabi_atexit}, {"__register_frame_info", (void *)b_register_frame_info},
             {"__deregister_frame_info", (void *)b_deregister_frame_info}, {"_Jv_RegisterClasses", (void *)b_jv_register},
-            {"__stack_chk_guard", &b_stack_chk_guard}, {"__sF", bionic_sF}, {"_ctype_", bionic_ctype}, {"_tolower_tab_", &p_tolower}, {"_toupper_tab_", &p_toupper},
+            {"__stack_chk_guard", &b_stack_chk_guard}, {"__sF", bionic_sF}, {"_ctype_", &p_ctype}, {"_tolower_tab_", &p_tolower}, {"_toupper_tab_", &p_toupper},
             {"__srget", (void *)b_srget}, {"__swbuf", (void *)b_swbuf},
             {"fprintf", (void *)b_fprintf}, {"vfprintf", (void *)b_vfprintf}, {"fputs", (void *)b_fputs}, {"fputc", (void *)b_fputc},
             {"putc", (void *)b_fputc}, {"fwrite", (void *)b_fwrite}, {"fread", (void *)b_fread}, {"fflush", (void *)b_fflush},
@@ -1163,7 +1198,7 @@ jobs:
             L("== selftest ==\n");
             if (st_va("(IJLjava/lang/String;ZDF)V", -5, 0x123456789aLL, (void *)0x1234, 7, 2.5, 1.5)) L("  collect_va: LULUS\n"); else { L("  collect_va: GAGAL\n"); ok = 0; }
             if (sig_nargs("(IJ[ILjava/lang/String;[[Ljava/lang/Object;)V") == 5) L("  sig_nargs: LULUS\n"); else { L("  sig_nargs: GAGAL\n"); ok = 0; }
-            if ((bionic_ctype[1 + 'A'] & 0x41) == 0x41 && (bionic_ctype[1 + '5'] & 0x44) == 0x44 && (bionic_ctype[1 + ' '] & 0x88) == 0x88 && (*(const int16_t * const *)shim_addr("_tolower_tab_"))[1 + 'Q'] == 'q') L("  ctype/tolower: LULUS\n"); else { L("  ctype/tolower: GAGAL\n"); ok = 0; }
+            if (((*(const char * const *)shim_addr("_ctype_"))[1 + 'A'] & 0x41) == 0x41 && ((*(const char * const *)shim_addr("_ctype_"))[1 + '5'] & 0x44) == 0x44 && ((*(const char * const *)shim_addr("_ctype_"))[1 + ' '] & 0x88) == 0x88 && (*(const int16_t * const *)shim_addr("_tolower_tab_"))[1 + 'Q'] == 'q') L("  ctype/tolower: LULUS\n"); else { L("  ctype/tolower: GAGAL\n"); ok = 0; }
             if (apk_find(g_apk, "assets/data.mjz", &off, &len, &method) == 0) L("  apk_find(assets/data.mjz): offset=%u panjang=%u method=%d\n", off, len, method);
             else L("  apk_find: tidak dicoba/gagal (APK: %s)\n", g_apk);
             L("== selftest %s ==\n", ok ? "SEMUA LULUS" : "ADA YANG GAGAL");
