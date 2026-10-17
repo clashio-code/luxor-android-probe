@@ -221,7 +221,7 @@ jobs:
           }
           EOF_C1
           cat > src/luxorloader.c <<'EOF_C2'
-          /* luxorloader - Milestone 2 port Luxor Android (armhf / muOS).
+          /* luxorloader - Milestone 3 port Luxor Android (armhf / muOS).
            * Memuat libfmodex.so + libmain.so (ELF32 ARM, bionic) SENDIRI tanpa dlopen,
            * memetakan impornya ke shim bionic->glibc, menyediakan JNI palsu, lalu memanggil JNI_OnLoad.
            * Target tahap ini: JNI_OnLoad selesai tanpa crash + log semua panggilan JNI.
@@ -233,6 +233,8 @@ jobs:
           #include <stdint.h>
           #include <stdarg.h>
           #include <setjmp.h>
+          #include <math.h>
+          #include <time.h>
           #include <errno.h>
           #include <elf.h>
           #include <dlfcn.h>
@@ -253,13 +255,20 @@ jobs:
           #define MAXMOD 4
           #define MAXUNRES 64
           #define U32(p) ((uint32_t)(uintptr_t)(p))
+          /* Library Android armeabi-v7a memakai ABI softfp (float/double lewat r0-r3), sedangkan proses ini hard-float.
+           * Semua fungsi FP yang dipanggil game ATAU yang dipanggil-balik ke game harus memakai "aapcs" dasar. */
+          #ifdef __arm__
+          #define AAPCS __attribute__((pcs("aapcs")))
+          #else
+          #define AAPCS
+          #endif
 
-          static FILE *logf;
+          static FILE *g_log;
 
           static void L(const char *fmt, ...) {
             va_list ap;
             va_start(ap, fmt); vfprintf(stdout, fmt, ap); va_end(ap); fflush(stdout);
-            if (logf) { va_start(ap, fmt); vfprintf(logf, fmt, ap); va_end(ap); fflush(logf); }
+            if (g_log) { va_start(ap, fmt); vfprintf(g_log, fmt, ap); va_end(ap); fflush(g_log); }
           }
 
           /* ======================= modul ELF ======================= */
@@ -477,6 +486,61 @@ jobs:
           static int b_dlclose(void *h) { return h ? dlclose(h) : 0; }
           static char *b_dlerror(void) { return dlerror(); }
 
+          /* ---- pembungkus FP: softfp (game) -> hard-float (glibc/libm/GL) ---- */
+          AAPCS static float w_sinf(float x) { return sinf(x); }
+          AAPCS static float w_cosf(float x) { return cosf(x); }
+          AAPCS static float w_tanf(float x) { return tanf(x); }
+          AAPCS static float w_asinf(float x) { return asinf(x); }
+          AAPCS static float w_acosf(float x) { return acosf(x); }
+          AAPCS static float w_atanf(float x) { return atanf(x); }
+          AAPCS static float w_sqrtf(float x) { return sqrtf(x); }
+          AAPCS static float w_floorf(float x) { return floorf(x); }
+          AAPCS static float w_ceilf(float x) { return ceilf(x); }
+          AAPCS static float w_fabsf(float x) { return fabsf(x); }
+          AAPCS static float w_expf(float x) { return expf(x); }
+          AAPCS static float w_logf(float x) { return logf(x); }
+          AAPCS static float w_log10f(float x) { return log10f(x); }
+          AAPCS static float w_log2f(float x) { return log2f(x); }
+          AAPCS static float w_roundf(float x) { return roundf(x); }
+          AAPCS static float w_truncf(float x) { return truncf(x); }
+          AAPCS static float w_powf(float x, float y) { return powf(x, y); }
+          AAPCS static float w_atan2f(float x, float y) { return atan2f(x, y); }
+          AAPCS static float w_fmodf(float x, float y) { return fmodf(x, y); }
+          AAPCS static double w_sin(double x) { return sin(x); }
+          AAPCS static double w_cos(double x) { return cos(x); }
+          AAPCS static double w_tan(double x) { return tan(x); }
+          AAPCS static double w_asin(double x) { return asin(x); }
+          AAPCS static double w_acos(double x) { return acos(x); }
+          AAPCS static double w_atan(double x) { return atan(x); }
+          AAPCS static double w_sqrt(double x) { return sqrt(x); }
+          AAPCS static double w_floor(double x) { return floor(x); }
+          AAPCS static double w_ceil(double x) { return ceil(x); }
+          AAPCS static double w_fabs(double x) { return fabs(x); }
+          AAPCS static double w_exp(double x) { return exp(x); }
+          AAPCS static double w_log(double x) { return log(x); }
+          AAPCS static double w_log10(double x) { return log10(x); }
+          AAPCS static double w_log2(double x) { return log2(x); }
+          AAPCS static double w_round(double x) { return round(x); }
+          AAPCS static double w_trunc(double x) { return trunc(x); }
+          AAPCS static double w_rint(double x) { return rint(x); }
+          AAPCS static double w_pow(double x, double y) { return pow(x, y); }
+          AAPCS static double w_atan2(double x, double y) { return atan2(x, y); }
+          AAPCS static double w_fmod(double x, double y) { return fmod(x, y); }
+          AAPCS static double w_ldexp(double x, int e) { return ldexp(x, e); }
+          AAPCS static float w_ldexpf(float x, int e) { return ldexpf(x, e); }
+          AAPCS static double w_frexp(double x, int *e) { return frexp(x, e); }
+          AAPCS static float w_frexpf(float x, int *e) { return frexpf(x, e); }
+          AAPCS static long w_lrintf(float x) { return lrintf(x); }
+          AAPCS static long w_lrint(double x) { return lrint(x); }
+          AAPCS static long w_lroundf(float x) { return lroundf(x); }
+          AAPCS static double w_strtod(const char *s, char **e) { return strtod(s, e); }
+          AAPCS static float w_strtof(const char *s, char **e) { return strtof(s, e); }
+          AAPCS static double w_atof(const char *s) { return atof(s); }
+          typedef void (*gl_4f_t)(float, float, float, float);
+          typedef void (*gl_1f_t)(float);
+          AAPCS static void w_glClearColor(float r, float g, float b, float a) { static gl_4f_t f; if (!f) f = (gl_4f_t)dlsym(h_gles, "glClearColor"); f(r, g, b, a); }
+          AAPCS static void w_glClearDepthf(float d) { static gl_1f_t f; if (!f) f = (gl_1f_t)dlsym(h_gles, "glClearDepthf"); f(d); }
+
           typedef struct { const char *name; void *addr; } Shim;
           static const Shim shim[] = {
             {"__errno", (void *)b_errno}, {"__android_log_print", (void *)b_android_log_print},
@@ -506,23 +570,40 @@ jobs:
             {"pthread_attr_setdetachstate", (void *)b_attr_setdetachstate}, {"pthread_attr_setstacksize", (void *)b_attr_setstacksize},
             {"pthread_create", (void *)b_pthread_create},
             {"dlopen", (void *)b_dlopen}, {"dlsym", (void *)b_dlsym}, {"dlclose", (void *)b_dlclose}, {"dlerror", (void *)b_dlerror},
+            {"sinf", (void *)w_sinf}, {"cosf", (void *)w_cosf}, {"tanf", (void *)w_tanf}, {"asinf", (void *)w_asinf},
+            {"acosf", (void *)w_acosf}, {"atanf", (void *)w_atanf}, {"sqrtf", (void *)w_sqrtf}, {"floorf", (void *)w_floorf},
+            {"ceilf", (void *)w_ceilf}, {"fabsf", (void *)w_fabsf}, {"expf", (void *)w_expf}, {"logf", (void *)w_logf},
+            {"log10f", (void *)w_log10f}, {"log2f", (void *)w_log2f}, {"roundf", (void *)w_roundf},
+            {"truncf", (void *)w_truncf}, {"powf", (void *)w_powf}, {"atan2f", (void *)w_atan2f}, {"fmodf", (void *)w_fmodf},
+            {"sin", (void *)w_sin}, {"cos", (void *)w_cos}, {"tan", (void *)w_tan}, {"asin", (void *)w_asin},
+            {"acos", (void *)w_acos}, {"atan", (void *)w_atan}, {"sqrt", (void *)w_sqrt}, {"floor", (void *)w_floor},
+            {"ceil", (void *)w_ceil}, {"fabs", (void *)w_fabs}, {"exp", (void *)w_exp}, {"log", (void *)w_log},
+            {"log10", (void *)w_log10}, {"log2", (void *)w_log2}, {"round", (void *)w_round}, {"trunc", (void *)w_trunc},
+            {"rint", (void *)w_rint}, {"pow", (void *)w_pow}, {"atan2", (void *)w_atan2}, {"fmod", (void *)w_fmod},
+            {"ldexp", (void *)w_ldexp}, {"ldexpf", (void *)w_ldexpf}, {"frexp", (void *)w_frexp}, {"frexpf", (void *)w_frexpf},
+            {"lrintf", (void *)w_lrintf}, {"lrint", (void *)w_lrint}, {"lroundf", (void *)w_lroundf},
+            {"strtod", (void *)w_strtod}, {"strtof", (void *)w_strtof}, {"atof", (void *)w_atof},
+            {"glClearColor", (void *)w_glClearColor}, {"glClearDepthf", (void *)w_glClearDepthf},
             {NULL, NULL}
           };
 
-          /* ======================= JNI palsu ======================= */
+          /* ======================= JNI palsu (model objek sederhana + log panggilan Java) ======================= */
+          typedef union { int32_t i; int64_t j; float f; double d; void *l; } jv;
+
           static const void *g_jni_table[256];
           static const void *g_vm_table[16];
           static const void *g_envobj = g_jni_table;
           static const void *g_vmobj = g_vm_table;
           static char *reg_str[4096];
-          static int reg_n;
+          static int reg_n, obj_serial;
+          static char g_apk[512];
 
           static void *mk_handle(const char *what, const char *s) {
             int i;
+            (void)what;
             for (i = 0; i < reg_n; i++) if (strcmp(reg_str[i], s) == 0) return (void *)(uintptr_t)(0x70000000u + (uint32_t)i * 4u);
             if (reg_n >= 4096) return (void *)(uintptr_t)0x70000000u;
             reg_str[reg_n] = strdup(s);
-            (void)what;
             return (void *)(uintptr_t)(0x70000000u + (uint32_t)(reg_n++) * 4u);
           }
           static const char *h2s(void *h) {
@@ -530,29 +611,202 @@ jobs:
             if (v >= 0x70000000u && ((v - 0x70000000u) / 4u) < (uintptr_t)reg_n) return reg_str[(v - 0x70000000u) / 4u];
             return "?";
           }
+          static void *mk_obj(const char *cls) { char b[200]; snprintf(b, sizeof b, "obj:%s#%d", cls, ++obj_serial); return mk_handle("object", b); }
+
+          typedef struct { char cls[96]; char name[64]; char sig[128]; int is_static; unsigned count; } MInfo;
+          static MInfo minfo[512];
+          static int nminfo;
+          static int jlog_budget = 600;
+
+          static void *mk_method(const char *cls, const char *name, const char *sig, int st) {
+            int i;
+            for (i = 0; i < nminfo; i++)
+              if (!strcmp(minfo[i].cls, cls) && !strcmp(minfo[i].name, name) && !strcmp(minfo[i].sig, sig) && minfo[i].is_static == st)
+                return (void *)(uintptr_t)(0x71000000u + (uint32_t)i * 4u);
+            if (nminfo >= 512) i = 511; else i = nminfo++;
+            snprintf(minfo[i].cls, sizeof minfo[i].cls, "%s", cls);
+            snprintf(minfo[i].name, sizeof minfo[i].name, "%s", name);
+            snprintf(minfo[i].sig, sizeof minfo[i].sig, "%s", sig);
+            minfo[i].is_static = st; minfo[i].count = 0;
+            L("[JNI] %s: %s.%s%s\n", st ? "GetStaticMethodID" : "GetMethodID", cls, name, sig);
+            return (void *)(uintptr_t)(0x71000000u + (uint32_t)i * 4u);
+          }
+          static MInfo *mi_get(void *mid) {
+            uintptr_t v = (uintptr_t)mid;
+            if (v >= 0x71000000u && ((v - 0x71000000u) / 4u) < (uintptr_t)nminfo) return &minfo[(v - 0x71000000u) / 4u];
+            return NULL;
+          }
+
+          /* ---- asset di dalam APK (Android: AssetFileDescriptor.getStartOffset/getLength; hanya valid untuk entri tanpa kompresi) ---- */
+          static int apk_find(const char *apk, const char *entry, uint32_t *off, uint32_t *len, int *method) {
+            FILE *f = fopen(apk, "rb");
+            uint8_t tail[66000], *cd, lh[30];
+            long fsz, tn, i, p = -1;
+            uint32_t cdsz, cdoff, k, pos;
+            unsigned ent, e;
+            int found = -1;
+            if (!f) return -1;
+            fseek(f, 0, SEEK_END); fsz = ftell(f);
+            tn = fsz < (long)sizeof tail ? fsz : (long)sizeof tail;
+            fseek(f, fsz - tn, SEEK_SET);
+            if (fread(tail, 1, (size_t)tn, f) != (size_t)tn) { fclose(f); return -1; }
+            for (i = tn - 22; i >= 0; i--) if (tail[i] == 0x50 && tail[i+1] == 0x4b && tail[i+2] == 5 && tail[i+3] == 6) { p = i; break; }
+            if (p < 0) { fclose(f); return -1; }
+            ent = tail[p+10] | (tail[p+11] << 8);
+            cdsz = tail[p+12] | (tail[p+13] << 8) | (tail[p+14] << 16) | ((uint32_t)tail[p+15] << 24);
+            cdoff = tail[p+16] | (tail[p+17] << 8) | (tail[p+18] << 16) | ((uint32_t)tail[p+19] << 24);
+            cd = malloc(cdsz);
+            fseek(f, (long)cdoff, SEEK_SET);
+            if (!cd || fread(cd, 1, cdsz, f) != cdsz) { free(cd); fclose(f); return -1; }
+            for (e = 0, k = 0; e < ent && k + 46 <= cdsz; e++) {
+              unsigned nl = cd[k+28] | (cd[k+29] << 8), el = cd[k+30] | (cd[k+31] << 8), cl = cd[k+32] | (cd[k+33] << 8);
+              if (nl == strlen(entry) && memcmp(cd + k + 46, entry, nl) == 0) {
+                uint32_t lho = cd[k+42] | (cd[k+43] << 8) | (cd[k+44] << 16) | ((uint32_t)cd[k+45] << 24);
+                *method = cd[k+10] | (cd[k+11] << 8);
+                *len = cd[k+24] | (cd[k+25] << 8) | (cd[k+26] << 16) | ((uint32_t)cd[k+27] << 24);
+                fseek(f, (long)lho, SEEK_SET);
+                if (fread(lh, 1, 30, f) == 30 && lh[0] == 0x50 && lh[1] == 0x4b && lh[2] == 3 && lh[3] == 4) {
+                  pos = lho + 30 + (lh[26] | (lh[27] << 8)) + (lh[28] | (lh[29] << 8));
+                  *off = pos; found = 0;
+                }
+                break;
+              }
+              k += 46 + nl + el + cl;
+            }
+            free(cd); fclose(f);
+            return found;
+          }
+
+          /* ---- argumen varargs / jvalue ---- */
+          static int sig_nargs(const char *sig) {
+            const char *p = sig + 1; int n = 0;
+            while (*p && *p != ')') {
+              while (*p == '[') p++;
+              if (*p == 'L') { while (*p && *p != ';') p++; }
+              if (*p) p++;
+              n++;
+            }
+            return n;
+          }
+          static int collect_va(const char *sig, va_list ap, jv *out) {
+            const char *p = sig + 1; int n = 0;
+            while (*p && *p != ')' && n < 16) {
+              int arr = 0;
+              memset(&out[n], 0, sizeof out[n]);
+              while (*p == '[') { arr = 1; p++; }
+              if (*p == 'L' || arr) {
+                out[n].l = va_arg(ap, void *);
+                if (*p == 'L') { while (*p && *p != ';') p++; }
+              } else switch (*p) {
+                case 'J': out[n].j = va_arg(ap, int64_t); break;
+                case 'F': out[n].f = (float)va_arg(ap, double); break;
+                case 'D': out[n].d = va_arg(ap, double); break;
+                default: out[n].i = va_arg(ap, int); break;
+              }
+              if (*p) p++;
+              n++;
+            }
+            return n;
+          }
+          static void fmt_args(const MInfo *m, const jv *a, char *buf, size_t sz) {
+            const char *p = m->sig + 1; int n = 0; size_t o = 0;
+            buf[0] = 0;
+            while (*p && *p != ')' && n < 16 && o + 80 < sz) {
+              int arr = 0;
+              while (*p == '[') { arr = 1; p++; }
+              if (*p == 'L' || arr) {
+                const char *s = h2s(a[n].l);
+                if (*s != '?' && strncmp(s, "obj:", 4) != 0) o += (size_t)snprintf(buf + o, sz - o, "\"%.60s\"", s);
+                else o += (size_t)snprintf(buf + o, sz - o, "%p", a[n].l);
+                if (*p == 'L') { while (*p && *p != ';') p++; }
+              } else switch (*p) {
+                case 'J': o += (size_t)snprintf(buf + o, sz - o, "%lld", (long long)a[n].j); break;
+                case 'F': o += (size_t)snprintf(buf + o, sz - o, "%g", (double)a[n].f); break;
+                case 'D': o += (size_t)snprintf(buf + o, sz - o, "%g", a[n].d); break;
+                default: o += (size_t)snprintf(buf + o, sz - o, "%d", a[n].i); break;
+              }
+              if (*p) p++;
+              n++;
+              if (*p && *p != ')') o += (size_t)snprintf(buf + o, sz - o, ", ");
+            }
+          }
+
+          static void java_invoke(void *mid, const jv *a, jv *r) {
+            MInfo *m = mi_get(mid);
+            const char *rp;
+            char rt, args[400];
+            memset(r, 0, sizeof *r);
+            if (!m) { L("[Java] methodID tak dikenal: %p\n", mid); return; }
+            rp = strchr(m->sig, ')');
+            rt = rp ? rp[1] : 'V';
+            m->count++;
+            fmt_args(m, a, args, sizeof args);
+            if (jlog_budget > 0 || m->count <= 3) { L("[Java] %s.%s(%s) -> %c\n", m->cls, m->name, args, rt); if (jlog_budget > 0) jlog_budget--; }
+            if (!strcmp(m->name, "getRawAssetFileOffset") || !strcmp(m->name, "getRawAssetFileLength")) {
+              char ent[300]; uint32_t off = 0, len = 0; int method = -1;
+              snprintf(ent, sizeof ent, "assets/%s", h2s(a[0].l));
+              if (apk_find(g_apk, ent, &off, &len, &method) == 0) {
+                if (method != 0) L("[asset] PERINGATAN: %s terkompresi (method %d); native tidak bisa membaca langsung\n", ent, method);
+                r->j = !strcmp(m->name, "getRawAssetFileOffset") ? (int64_t)off : (int64_t)len;
+                if (m->count <= 5) L("[asset] %s -> offset=%u panjang=%u\n", ent, off, len);
+              } else { L("[asset] TIDAK ADA di APK (%s): %s\n", g_apk, ent); r->j = -1; }
+            } else if (!strcmp(m->name, "getLanguageCode")) {
+              r->l = mk_handle("string", "en");
+            } else if (rt == 'L' && rp && !strcmp(rp + 1, "Ljava/lang/String;")) {
+              r->l = mk_handle("string", "");
+            }
+          }
+
+          #define PREP_VA(mid, ap, a) do { MInfo *mi_ = mi_get(mid); if (mi_) collect_va(mi_->sig, ap, a); } while (0)
+
+          #define DEFCALL(NAME, CT, ATTR, CONV) \
+            ATTR static CT j_Call##NAME##Method(void *env, void *o, void *mid, ...) { va_list ap; jv a[16], r; (void)env; (void)o; memset(a, 0, sizeof a); va_start(ap, mid); PREP_VA(mid, ap, a); va_end(ap); java_invoke(mid, a, &r); return CONV; } \
+            ATTR static CT j_Call##NAME##MethodV(void *env, void *o, void *mid, va_list ap) { jv a[16], r; (void)env; (void)o; memset(a, 0, sizeof a); PREP_VA(mid, ap, a); java_invoke(mid, a, &r); return CONV; } \
+            ATTR static CT j_Call##NAME##MethodA(void *env, void *o, void *mid, const jv *args) { jv r; (void)env; (void)o; java_invoke(mid, args, &r); return CONV; } \
+            ATTR static CT j_CallStatic##NAME##Method(void *env, void *o, void *mid, ...) { va_list ap; jv a[16], r; (void)env; (void)o; memset(a, 0, sizeof a); va_start(ap, mid); PREP_VA(mid, ap, a); va_end(ap); java_invoke(mid, a, &r); return CONV; } \
+            ATTR static CT j_CallStatic##NAME##MethodV(void *env, void *o, void *mid, va_list ap) { jv a[16], r; (void)env; (void)o; memset(a, 0, sizeof a); PREP_VA(mid, ap, a); java_invoke(mid, a, &r); return CONV; } \
+            ATTR static CT j_CallStatic##NAME##MethodA(void *env, void *o, void *mid, const jv *args) { jv r; (void)env; (void)o; java_invoke(mid, args, &r); return CONV; }
+
+          DEFCALL(Object, void *, , r.l)
+          DEFCALL(Boolean, uint8_t, , (uint8_t)r.i)
+          DEFCALL(Byte, int8_t, , (int8_t)r.i)
+          DEFCALL(Char, uint16_t, , (uint16_t)r.i)
+          DEFCALL(Short, int16_t, , (int16_t)r.i)
+          DEFCALL(Int, int32_t, , r.i)
+          DEFCALL(Long, int64_t, , r.j)
+          DEFCALL(Float, float, AAPCS, r.f)
+          DEFCALL(Double, double, AAPCS, r.d)
+
+          #define DEFCALLV(NAME) \
+            static void j_Call##NAME##Method(void *env, void *o, void *mid, ...) { va_list ap; jv a[16], r; (void)env; (void)o; memset(a, 0, sizeof a); va_start(ap, mid); PREP_VA(mid, ap, a); va_end(ap); java_invoke(mid, a, &r); } \
+            static void j_Call##NAME##MethodV(void *env, void *o, void *mid, va_list ap) { jv a[16], r; (void)env; (void)o; memset(a, 0, sizeof a); PREP_VA(mid, ap, a); java_invoke(mid, a, &r); } \
+            static void j_Call##NAME##MethodA(void *env, void *o, void *mid, const jv *args) { jv r; (void)env; (void)o; java_invoke(mid, args, &r); } \
+            static void j_CallStatic##NAME##Method(void *env, void *o, void *mid, ...) { va_list ap; jv a[16], r; (void)env; (void)o; memset(a, 0, sizeof a); va_start(ap, mid); PREP_VA(mid, ap, a); va_end(ap); java_invoke(mid, a, &r); } \
+            static void j_CallStatic##NAME##MethodV(void *env, void *o, void *mid, va_list ap) { jv a[16], r; (void)env; (void)o; memset(a, 0, sizeof a); PREP_VA(mid, ap, a); java_invoke(mid, a, &r); } \
+            static void j_CallStatic##NAME##MethodA(void *env, void *o, void *mid, const jv *args) { jv r; (void)env; (void)o; java_invoke(mid, args, &r); }
+          DEFCALLV(Void)
+
           static int jni_trap(int i) { L("[JNI] slot %d (%s) dipanggil, belum diimplementasi -> return 0\n", i, jni_names[i]); return 0; }
 
           static int j_GetVersion(void *env) { (void)env; return 0x00010006; }
           static void *j_FindClass(void *env, const char *n) { (void)env; L("[JNI] FindClass(\"%s\")\n", n); return mk_handle("class", n); }
-          static void *j_GetObjectClass(void *env, void *o) { (void)env; (void)o; return mk_handle("class", "(object-class)"); }
-          static void *j_GetMethodID(void *env, void *cls, const char *n, const char *sig) {
-            char buf[512]; (void)env;
-            L("[JNI] GetMethodID(%s, \"%s\", \"%s\")\n", h2s(cls), n, sig);
-            snprintf(buf, sizeof buf, "M:%s:%s%s", h2s(cls), n, sig);
-            return mk_handle("method", buf);
+          static void *j_GetObjectClass(void *env, void *o) {
+            const char *s = h2s(o); char b[160]; const char *p, *q; (void)env;
+            if (!strncmp(s, "obj:", 4)) { p = s + 4; q = strrchr(p, '#'); snprintf(b, sizeof b, "%.*s", q ? (int)(q - p) : (int)strlen(p), p); return mk_handle("class", b); }
+            return mk_handle("class", "(object-class)");
           }
-          static void *j_GetStaticMethodID(void *env, void *cls, const char *n, const char *sig) {
-            char buf[512]; (void)env;
-            L("[JNI] GetStaticMethodID(%s, \"%s\", \"%s\")\n", h2s(cls), n, sig);
-            snprintf(buf, sizeof buf, "S:%s:%s%s", h2s(cls), n, sig);
-            return mk_handle("method", buf);
-          }
+          static void *j_GetMethodID(void *env, void *cls, const char *n, const char *sig) { (void)env; return mk_method(h2s(cls), n, sig, 0); }
+          static void *j_GetStaticMethodID(void *env, void *cls, const char *n, const char *sig) { (void)env; return mk_method(h2s(cls), n, sig, 1); }
           static void *j_GetFieldID(void *env, void *cls, const char *n, const char *sig) {
             char buf[512]; (void)env;
-            L("[JNI] GetFieldID(%s, \"%s\", \"%s\")\n", h2s(cls), n, sig);
+            L("[JNI] GetFieldID/GetStaticFieldID(%s, \"%s\", \"%s\")\n", h2s(cls), n, sig);
             snprintf(buf, sizeof buf, "F:%s:%s%s", h2s(cls), n, sig);
             return mk_handle("field", buf);
           }
+          static void *j_NewObject(void *env, void *cls, void *mid, ...) { (void)env; (void)mid; L("[JNI] NewObject(%s)\n", h2s(cls)); return mk_obj(h2s(cls)); }
+          static void *j_NewObjectV(void *env, void *cls, void *mid, va_list ap) { (void)env; (void)mid; (void)ap; L("[JNI] NewObjectV(%s)\n", h2s(cls)); return mk_obj(h2s(cls)); }
+          static void *j_NewObjectA(void *env, void *cls, void *mid, const jv *a) { (void)env; (void)mid; (void)a; L("[JNI] NewObjectA(%s)\n", h2s(cls)); return mk_obj(h2s(cls)); }
+          static void *j_AllocObject(void *env, void *cls) { (void)env; return mk_obj(h2s(cls)); }
           static void *j_ident(void *env, void *o) { (void)env; return o; }
           static void j_void2(void *env, void *o) { (void)env; (void)o; }
           static void j_void1(void *env) { (void)env; }
@@ -560,8 +814,27 @@ jobs:
           static int j_zero2(void *env, int x) { (void)env; (void)x; return 0; }
           static void *j_NewStringUTF(void *env, const char *s) { (void)env; return mk_handle("string", s ? s : ""); }
           static int j_GetStringUTFLength(void *env, void *s) { (void)env; return (int)strlen(h2s(s)); }
-          static const char *j_GetStringUTFChars(void *env, void *s, unsigned char *copy) { (void)env; if (copy) *copy = 0; return h2s(s); }
+          static const char *j_GetStringUTFChars(void *env, void *s, unsigned char *copy) {
+            const char *t = h2s(s); (void)env;
+            if (copy) *copy = 0;
+            if (*t == '?' && t[1] == 0) L("[JNI] GetStringUTFChars: handle %p bukan string terdaftar\n", s);
+            return t;
+          }
           static void j_ReleaseStringUTFChars(void *env, void *s, const char *c) { (void)env; (void)s; (void)c; }
+          static int j_GetStringLength(void *env, void *s) { (void)env; return (int)strlen(h2s(s)); }
+          static const uint16_t *j_GetStringChars(void *env, void *s, unsigned char *copy) {
+            const char *t = h2s(s); size_t i, n = strlen(t); uint16_t *b = malloc((n + 1) * 2); (void)env;
+            for (i = 0; i < n; i++) b[i] = (uint8_t)t[i];
+            b[n] = 0; if (copy) *copy = 1;
+            return b;
+          }
+          static void j_ReleaseStringChars(void *env, void *s, const uint16_t *c) { (void)env; (void)s; free((void *)c); }
+          static void *j_NewString(void *env, const uint16_t *u, int n) {
+            char *t = malloc((size_t)n + 1); int i; void *h; (void)env;
+            for (i = 0; i < n; i++) t[i] = (char)u[i];
+            t[n] = 0; h = mk_handle("string", t); free(t);
+            return h;
+          }
           typedef struct { const char *name; const char *sig; void *fn; } NativeMethod;
           static int j_RegisterNatives(void *env, void *cls, const NativeMethod *m, int n) {
             int i; (void)env;
@@ -572,21 +845,29 @@ jobs:
           static int j_GetJavaVM(void *env, void **vm) { (void)env; *vm = (void *)&g_vmobj; return 0; }
           static int vm_Destroy(void *vm) { (void)vm; return 0; }
           static int vm_Attach(void *vm, void **penv, void *args) { (void)vm; (void)args; *penv = (void *)&g_envobj; return 0; }
-          static int vm_GetEnv(void *vm, void **penv, int ver) { (void)vm; (void)ver; *penv = (void *)&g_envobj; L("[JNI] GetEnv(versi 0x%x)\n", ver); return 0; }
+          static int vm_GetEnv(void *vm, void **penv, int ver) { (void)vm; *penv = (void *)&g_envobj; L("[JNI] GetEnv(versi 0x%x)\n", ver); return 0; }
+
+          #define SETFAM(base, N) do { g_jni_table[base] = (void *)j_Call##N##Method; g_jni_table[base + 1] = (void *)j_Call##N##MethodV; g_jni_table[base + 2] = (void *)j_Call##N##MethodA; \
+            g_jni_table[base + 80] = (void *)j_CallStatic##N##Method; g_jni_table[base + 81] = (void *)j_CallStatic##N##MethodV; g_jni_table[base + 82] = (void *)j_CallStatic##N##MethodA; } while (0)
 
           static void init_jni(void) {
             int i;
             for (i = 0; i < 256; i++) g_jni_table[i] = jstubs[i];
             g_jni_table[4] = (void *)j_GetVersion;   g_jni_table[6] = (void *)j_FindClass;
-            g_jni_table[15] = (void *)j_zero1;
-            g_jni_table[16] = (void *)j_void1;       g_jni_table[17] = (void *)j_void1;
-            g_jni_table[19] = (void *)j_zero2;       g_jni_table[20] = (void *)j_ident;
-            g_jni_table[21] = (void *)j_ident;       g_jni_table[22] = (void *)j_void2;
-            g_jni_table[23] = (void *)j_void2;       g_jni_table[25] = (void *)j_ident;
-            g_jni_table[26] = (void *)j_zero2;       g_jni_table[31] = (void *)j_GetObjectClass;
-            g_jni_table[33] = (void *)j_GetMethodID; g_jni_table[94] = (void *)j_GetFieldID;
-            g_jni_table[113] = (void *)j_GetStaticMethodID;
+            g_jni_table[15] = (void *)j_zero1;       g_jni_table[16] = (void *)j_void1;
+            g_jni_table[17] = (void *)j_void1;       g_jni_table[19] = (void *)j_zero2;
+            g_jni_table[20] = (void *)j_ident;       g_jni_table[21] = (void *)j_ident;
+            g_jni_table[22] = (void *)j_void2;       g_jni_table[23] = (void *)j_void2;
+            g_jni_table[25] = (void *)j_ident;       g_jni_table[26] = (void *)j_zero2;
+            g_jni_table[27] = (void *)j_AllocObject; g_jni_table[28] = (void *)j_NewObject;
+            g_jni_table[29] = (void *)j_NewObjectV;  g_jni_table[30] = (void *)j_NewObjectA;
+            g_jni_table[31] = (void *)j_GetObjectClass; g_jni_table[33] = (void *)j_GetMethodID;
+            SETFAM(34, Object); SETFAM(37, Boolean); SETFAM(40, Byte); SETFAM(43, Char); SETFAM(46, Short);
+            SETFAM(49, Int);    SETFAM(52, Long);    SETFAM(55, Float); SETFAM(58, Double); SETFAM(61, Void);
+            g_jni_table[94] = (void *)j_GetFieldID;  g_jni_table[113] = (void *)j_GetStaticMethodID;
             g_jni_table[144] = (void *)j_GetFieldID;
+            g_jni_table[163] = (void *)j_NewString;  g_jni_table[164] = (void *)j_GetStringLength;
+            g_jni_table[165] = (void *)j_GetStringChars; g_jni_table[166] = (void *)j_ReleaseStringChars;
             g_jni_table[167] = (void *)j_NewStringUTF; g_jni_table[168] = (void *)j_GetStringUTFLength;
             g_jni_table[169] = (void *)j_GetStringUTFChars; g_jni_table[170] = (void *)j_ReleaseStringUTFChars;
             g_jni_table[215] = (void *)j_RegisterNatives; g_jni_table[217] = (void *)j_zero2;
@@ -689,6 +970,14 @@ jobs:
             return NULL;
           }
 
+          static int fp_suspect(const char *n) {
+            static const char *k[] = { "sinh","cosh","tanh","asinh","acosh","atanh","cbrt","hypot","fmin","fmax","copysign","nearbyint","lround","ceilf","exp2","exp2f","expm1","log1p","hypotf","fminf","fmaxf","copysignf","modf","modff","sinhf","coshf","tanhf","cbrtf","remainder","fdim","scalbn","scalbnf","nextafter","trunc","rintf","nearbyintf","strtold","glColor4f","glTranslatef","glScalef","glRotatef","glOrthof","glFrustumf","glLineWidth","glTexParameterf","glTexEnvf","glAlphaFunc","glPointSize","glFogf","glLightf","glMaterialf","glDepthRangef","glPolygonOffset","glSampleCoverage","glNormal3f","glBlendColor","glClipPlanef","glFogfv","glLightfv","glMaterialfv","glTexEnvfv","glTexParameterfv","glLightModelf","glPointParameterf","difftime", NULL };
+            int i;
+            for (i = 0; k[i]; i++) if (strcmp(k[i], n) == 0) return 1;
+            return 0;
+          }
+          static int cnt_fpwarn;
+
           static uint32_t resolve(const Mod *self, const Elf32_Sym *s) {
             const char *n = self->str + s->st_name;
             int i;
@@ -696,8 +985,8 @@ jobs:
             if (s->st_shndx != SHN_UNDEF) { cnt_self++; return U32(self->bias + s->st_value); }
             for (i = 0; i < nmods; i++) if (&mods[i] != self && (p = mod_find(&mods[i], n))) { cnt_mod++; return U32(p); }
             for (i = 0; shim[i].name; i++) if (strcmp(shim[i].name, n) == 0) { cnt_shim++; if (nshim_hit < 256) shim_hit[nshim_hit++] = shim[i].name; return U32(shim[i].addr); }
-            if ((p = dlsym(RTLD_DEFAULT, n))) { cnt_libc++; return U32(p); }
-            if (h_gles && (p = dlsym(h_gles, n))) { cnt_gl++; return U32(p); }
+            if ((p = dlsym(RTLD_DEFAULT, n))) { cnt_libc++; if (fp_suspect(n)) { cnt_fpwarn++; L("[FP-ABI] PERINGATAN: %s memakai float/double tapi belum punya pembungkus softfp!\n", n); } return U32(p); }
+            if (h_gles && (p = dlsym(h_gles, n))) { cnt_gl++; if (fp_suspect(n)) { cnt_fpwarn++; L("[FP-ABI] PERINGATAN: %s memakai float/double tapi belum punya pembungkus softfp!\n", n); } return U32(p); }
             if (h_egl && (p = dlsym(h_egl, n))) { cnt_gl++; return U32(p); }
             if (ELF32_ST_BIND(s->st_info) == STB_WEAK) { cnt_weak0++; return 0; }
             for (i = 0; i < nunres; i++) if (strcmp(unres_name[i], n) == 0) return U32(tstubs[i]);
@@ -763,31 +1052,119 @@ jobs:
             L("[init] %s: selesai\n", m->name);
           }
 
+          /* ======================= SDL2 (dlopen) + konteks GLES1 ======================= */
+          static void *sdl_h, *g_win, *g_ctx;
+          static int (*p_SDL_Init)(uint32_t);
+          static const char *(*p_SDL_GetError)(void);
+          static int (*p_SDL_GL_SetAttribute)(int, int);
+          static void *(*p_SDL_CreateWindow)(const char *, int, int, int, int, uint32_t);
+          static void *(*p_SDL_GL_CreateContext)(void *);
+          static void (*p_SDL_GL_SwapWindow)(void *);
+          static void (*p_SDL_GL_GetDrawableSize)(void *, int *, int *);
+          static int (*p_SDL_GL_SetSwapInterval)(int);
+          static int (*p_SDL_PollEvent)(void *);
+          static const char *(*p_SDL_GetCurrentVideoDriver)(void);
+          static const unsigned char *(*p_glGetString)(unsigned);
+          static unsigned (*p_glGetError)(void);
+
+          static int gl_init(int *w, int *h) {
+            static const char *libs[] = { "libSDL2-2.0.so.0", "/usr/lib32/libSDL2-2.0.so.0", "libSDL2.so", NULL };
+            int i, ww = 0, hh = 0;
+            for (i = 0; libs[i] && !sdl_h; i++) {
+              sdl_h = dlopen(libs[i], RTLD_NOW | RTLD_GLOBAL);
+              L("[sdl] dlopen %s : %s\n", libs[i], sdl_h ? "OK" : dlerror());
+            }
+            if (!sdl_h) return -1;
+          #define SYM(n) do { *(void **)&p_##n = dlsym(sdl_h, #n); if (!p_##n) { L("[sdl] simbol %s tidak ada\n", #n); return -1; } } while (0)
+            SYM(SDL_Init); SYM(SDL_GetError); SYM(SDL_GL_SetAttribute); SYM(SDL_CreateWindow); SYM(SDL_GL_CreateContext);
+            SYM(SDL_GL_SwapWindow); SYM(SDL_GL_GetDrawableSize); SYM(SDL_GL_SetSwapInterval); SYM(SDL_PollEvent);
+            SYM(SDL_GetCurrentVideoDriver);
+          #undef SYM
+            if (p_SDL_Init(0x00000020u) != 0) { L("[sdl] SDL_Init(VIDEO) gagal: %s\n", p_SDL_GetError()); return -1; }
+            L("[sdl] video driver: %s\n", p_SDL_GetCurrentVideoDriver() ? p_SDL_GetCurrentVideoDriver() : "?");
+            p_SDL_GL_SetAttribute(17, 1);  /* CONTEXT_MAJOR_VERSION */
+            p_SDL_GL_SetAttribute(18, 1);  /* CONTEXT_MINOR_VERSION */
+            p_SDL_GL_SetAttribute(21, 4);  /* PROFILE_MASK = ES */
+            p_SDL_GL_SetAttribute(0, 8); p_SDL_GL_SetAttribute(1, 8); p_SDL_GL_SetAttribute(2, 8); p_SDL_GL_SetAttribute(3, 0);
+            p_SDL_GL_SetAttribute(5, 1); p_SDL_GL_SetAttribute(6, 16); p_SDL_GL_SetAttribute(7, 8);
+            g_win = p_SDL_CreateWindow("Luxor", 0x1FFF0000, 0x1FFF0000, 640, 480, 0x00000002u | 0x00001001u);
+            if (!g_win) { L("[sdl] SDL_CreateWindow gagal: %s\n", p_SDL_GetError()); return -1; }
+            g_ctx = p_SDL_GL_CreateContext(g_win);
+            if (!g_ctx) { L("[sdl] SDL_GL_CreateContext (GLES1) gagal: %s\n", p_SDL_GetError()); return -1; }
+            p_SDL_GL_SetSwapInterval(1);
+            p_SDL_GL_GetDrawableSize(g_win, &ww, &hh);
+            *w = ww > 0 ? ww : 640; *h = hh > 0 ? hh : 480;
+            *(void **)&p_glGetString = h_gles ? dlsym(h_gles, "glGetString") : NULL;
+            *(void **)&p_glGetError = h_gles ? dlsym(h_gles, "glGetError") : NULL;
+            if (p_glGetString) {
+              L("[gl] VENDOR   : %s\n", (const char *)p_glGetString(0x1F00));
+              L("[gl] RENDERER : %s\n", (const char *)p_glGetString(0x1F01));
+              L("[gl] VERSION  : %s\n", (const char *)p_glGetString(0x1F02));
+              L("[gl] EXTENSIONS: %.600s\n", (const char *)p_glGetString(0x1F03));
+            }
+            L("[gl] ukuran drawable: %dx%d\n", *w, *h);
+            return 0;
+          }
+
+          static void on_alarm(int sig) { (void)sig; L("\n*** WATCHDOG: waktu habis, proses dihentikan ***\n"); _exit(4); }
+
+          /* ======================= uji mandiri ======================= */
+          static int st_va(const char *sig, ...) { va_list ap; jv a[16]; int n; va_start(ap, sig); n = collect_va(sig, ap, a); va_end(ap);
+            return n == 6 && a[0].i == -5 && a[1].j == 0x123456789aLL && a[2].l == (void *)0x1234 && a[3].i == 7 && a[4].d > 2.49 && a[4].d < 2.51 && a[5].f > 1.49f && a[5].f < 1.51f; }
+          static int selftest(void) {
+            int ok = 1; uint32_t off = 0, len = 0; int method = -1;
+            L("== selftest ==\n");
+            if (st_va("(IJLjava/lang/String;ZDF)V", -5, 0x123456789aLL, (void *)0x1234, 7, 2.5, 1.5)) L("  collect_va: LULUS\n"); else { L("  collect_va: GAGAL\n"); ok = 0; }
+            if (sig_nargs("(IJ[ILjava/lang/String;[[Ljava/lang/Object;)V") == 5) L("  sig_nargs: LULUS\n"); else { L("  sig_nargs: GAGAL\n"); ok = 0; }
+            if ((bionic_ctype[1 + 'A'] & 0x41) == 0x41 && (bionic_ctype[1 + '5'] & 0x44) == 0x44 && (bionic_ctype[1 + ' '] & 0x88) == 0x88 && bionic_tolower[1 + 'Q'] == 'q') L("  ctype/tolower: LULUS\n"); else { L("  ctype/tolower: GAGAL\n"); ok = 0; }
+            if (apk_find(g_apk, "assets/data.mjz", &off, &len, &method) == 0) L("  apk_find(assets/data.mjz): offset=%u panjang=%u method=%d\n", off, len, method);
+            else L("  apk_find: tidak dicoba/gagal (APK: %s)\n", g_apk);
+            L("== selftest %s ==\n", ok ? "SEMUA LULUS" : "ADA YANG GAGAL");
+            return ok ? 0 : 1;
+          }
+
           /* ======================= main ======================= */
+          typedef void (*boot_fn)(void *, void *, void *, void *, void *, void *);
+          typedef void (*init_fn)(void *, void *, int, int);
+          typedef void (*frame_fn)(void *, void *);
+
           int main(int argc, char **argv) {
             const char *dir = "libs";
-            int dry = 0, i;
+            int dry = 0, i, stage = 3, frames = 60, timeout = 90, do_selftest = 0;
             Mod *fm = NULL, *mn = NULL;
             struct sigaction sa;
             struct utsname u;
+            char cwd[400], apk_abs[1024], files_dir[460], ext_dir[460];
 
-            for (i = 1; i < argc; i++) { if (strcmp(argv[i], "--dry") == 0) dry = 1; else dir = argv[i]; }
-            logf = fopen("loader_log.txt", "w");
-            L("== luxorloader (Milestone 2) ==\n");
+            snprintf(g_apk, sizeof g_apk, "luxor.apk");
+            for (i = 1; i < argc; i++) {
+              if (!strcmp(argv[i], "--dry")) dry = 1;
+              else if (!strcmp(argv[i], "--selftest")) do_selftest = 1;
+              else if (!strcmp(argv[i], "--apk") && i + 1 < argc) snprintf(g_apk, sizeof g_apk, "%s", argv[++i]);
+              else if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = atoi(argv[++i]);
+              else if (!strcmp(argv[i], "--stage") && i + 1 < argc) stage = atoi(argv[++i]);
+              else if (!strcmp(argv[i], "--timeout") && i + 1 < argc) timeout = atoi(argv[++i]);
+              else if (argv[i][0] != '-') dir = argv[i];
+            }
+            g_log = fopen("loader_log.txt", "w");
+            L("== luxorloader (Milestone 3) ==\n");
             if (uname(&u) == 0) L("device: %s %s %s | glibc %s\n", u.sysname, u.release, u.machine, gnu_get_libc_version());
           #if !defined(__arm__)
             dry = 1;
             L("(bukan ARM: mode --dry dipaksa)\n");
           #endif
-            L("folder libs: %s | mode: %s\n", dir, dry ? "DRY (tanpa menjalankan kode game)" : "JALAN");
+            L("libs: %s | apk: %s | mode: %s | stage=%d frames=%d timeout=%ds\n", dir, g_apk, dry ? "DRY" : "JALAN", stage, frames, timeout);
 
             memset(&sa, 0, sizeof sa);
             sa.sa_sigaction = on_sig; sa.sa_flags = SA_SIGINFO;
             sigaction(SIGSEGV, &sa, NULL); sigaction(SIGBUS, &sa, NULL); sigaction(SIGILL, &sa, NULL);
             sigaction(SIGFPE, &sa, NULL);  sigaction(SIGABRT, &sa, NULL);
+            signal(SIGALRM, on_alarm);
 
             init_tables();
             init_jni();
+            if (do_selftest) return selftest();
+
             dlopen("libm.so.6", RTLD_NOW | RTLD_GLOBAL);
             dlopen("libgcc_s.so.1", RTLD_NOW | RTLD_GLOBAL);
             dlopen("libstdc++.so.6", RTLD_NOW | RTLD_GLOBAL);
@@ -803,42 +1180,75 @@ jobs:
             protect(mn);
 
             L("\n== ringkasan resolusi simbol ==\n");
-            L("modul sendiri=%d | modul lain (fmodex)=%d | shim=%d | glibc/libstdc++=%d | GL/EGL=%d | weak->0=%d | TAK TERSELESAIKAN=%d\n",
-              cnt_self, cnt_mod, cnt_shim, cnt_libc, cnt_gl, cnt_weak0, cnt_unres);
+            L("modul sendiri=%d | modul lain (fmodex)=%d | shim=%d | glibc/libstdc++=%d | GL/EGL=%d | weak->0=%d | TAK TERSELESAIKAN=%d | peringatan FP-ABI=%d\n",
+              cnt_self, cnt_mod, cnt_shim, cnt_libc, cnt_gl, cnt_weak0, cnt_unres, cnt_fpwarn);
             for (i = 0; i < nunres; i++) L("  TAK TERSELESAIKAN: %s\n", unres_name[i]);
-            L("shim dipakai (%d):", nshim_hit);
-            for (i = 0; i < nshim_hit; i++) L(" %s", shim_hit[i]);
-            L("\n");
-
-            {
-              int n = 0, k;
-              L("\n== fungsi JNI terekspor libmain.so ==\n");
-              for (k = 1; k < mn->nsym; k++) {
-                const Elf32_Sym *s = &mn->sym[k];
-                const char *nm;
-                if (s->st_shndx == SHN_UNDEF || !s->st_name) continue;
-                nm = mn->str + s->st_name;
-                if (!strncmp(nm, "Java_", 5) || !strcmp(nm, "JNI_OnLoad")) { L("  %s @ 0x%lx\n", nm, (unsigned long)s->st_value); n++; }
-              }
-              L("  total: %d\n", n);
-            }
 
             if (dry) { L("\n== DRY selesai (tidak ada kode game yang dijalankan) ==\n"); return 0; }
+            if (timeout > 0) alarm((unsigned)timeout);
 
-            L("\n== menjalankan konstruktor ==\n");
+            L("\n== konstruktor ==\n");
             run_init(fm);
             run_init(mn);
 
             L("\n== JNI_OnLoad ==\n");
             {
               void *fn = mod_find(mn, "JNI_OnLoad");
-              if (!fn) L("JNI_OnLoad tidak ada di libmain.so\n");
-              else {
-                int v = ((int (*)(void *, void *))fn)((void *)&g_vmobj, NULL);
-                L("JNI_OnLoad mengembalikan 0x%x\n", v);
-              }
+              if (!fn) { L("JNI_OnLoad tidak ada\n"); return 1; }
+              L("JNI_OnLoad -> 0x%x\n", ((int (*)(void *, void *))fn)((void *)&g_vmobj, NULL));
             }
-            L("\n== Milestone 2 selesai tanpa crash ==\n");
+
+            {
+              boot_fn f_boot = (boot_fn)mod_find(mn, "Java_com_mumbojumbo_mj2_MJ2JNILib_bootstrap");
+              init_fn f_init = (init_fn)mod_find(mn, "Java_com_mumbojumbo_mj2_MJ2JNILib_initialize");
+              frame_fn f_frame = (frame_fn)mod_find(mn, "Java_com_mumbojumbo_mj2_MJ2JNILib_singleFrame");
+              void *env = (void *)&g_envobj, *cls = mk_handle("class", "com/mumbojumbo/mj2/MJ2JNILib");
+              void *act = mk_obj("com/mumbojumbo/mj2/MJ2Activity");
+              int w = 640, h = 480, f, quit = 0, nerr = 0;
+
+              L("\n== fungsi native ==\nbootstrap=%p initialize=%p singleFrame=%p\n", (void *)f_boot, (void *)f_init, (void *)f_frame);
+              if (!f_boot || !f_init || !f_frame) { L("fungsi native tidak lengkap\n"); return 1; }
+
+              if (!getcwd(cwd, sizeof cwd)) snprintf(cwd, sizeof cwd, ".");
+              if (!realpath(g_apk, apk_abs)) snprintf(apk_abs, sizeof apk_abs, "%s/%s", cwd, g_apk);
+              snprintf(files_dir, sizeof files_dir, "%s/files", cwd); snprintf(ext_dir, sizeof ext_dir, "%s/ext", cwd);
+              mkdir(files_dir, 0755); mkdir(ext_dir, 0755);
+
+              L("\n== bootstrap(activity, \"%s\", \"%s\", \"%s\") ==\n", apk_abs, files_dir, ext_dir);
+              f_boot(env, cls, act, mk_handle("string", apk_abs), mk_handle("string", files_dir), mk_handle("string", ext_dir));
+              L("bootstrap selesai\n");
+
+              if (stage >= 2) {
+                L("\n== membuat jendela + konteks GLES1 ==\n");
+                if (gl_init(&w, &h) != 0) { L("GL gagal, berhenti.\n"); return 1; }
+                L("\n== initialize(%d, %d) ==\n", w, h);
+                f_init(env, cls, w, h);
+                L("initialize selesai\n");
+              }
+
+              if (stage >= 3) {
+                L("\n== singleFrame x%d ==\n", frames);
+                for (f = 0; f < frames && !quit; f++) {
+                  unsigned char ev[64];
+                  unsigned err;
+                  while (p_SDL_PollEvent(ev)) {
+                    uint32_t t; memcpy(&t, ev, 4);
+                    if (t == 0x100u) quit = 1;
+                    if (t == 0x300u) { int32_t sym; memcpy(&sym, ev + 20, 4); if (sym == 27) quit = 1; }
+                  }
+                  f_frame(env, cls);
+                  p_SDL_GL_SwapWindow(g_win);
+                  err = p_glGetError ? p_glGetError() : 0;
+                  if (err && nerr < 10) { L("[gl] glGetError=0x%x pada frame %d\n", err, f); nerr++; }
+                  if (f < 5 || f % 30 == 0) L("[frame] %d selesai\n", f);
+                }
+                L("\n== %d frame selesai ==\n", f);
+              }
+
+              L("\n== ringkasan panggilan Java (jumlah) ==\n");
+              for (i = 0; i < nminfo; i++) if (minfo[i].count) L("  %5u  %s.%s%s\n", minfo[i].count, minfo[i].cls, minfo[i].name, minfo[i].sig);
+            }
+            L("\n== Milestone 3 selesai ==\n");
             return 0;
           }
           EOF_C2
@@ -913,7 +1323,7 @@ jobs:
           EOF_PY
           cat > src/launcher.tpl <<'EOF_TPL'
           #!/bin/bash
-          # Luxor Android loader (Milestone 2). MODE: @MODE@
+          # Luxor Android loader (Milestone 3). MODE: @MODE@
           # Folder data dicari seperti launcher PortMaster lain: /$directory/ports/<nama>
 
           XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
@@ -949,7 +1359,9 @@ jobs:
           fi
 
           echo "GAMEDIR=$GAMEDIR  mode=@MODE@" > loader_stdout.txt
-          ./luxorloader libs @ARG@ >> loader_stdout.txt 2>&1
+          [ -f luxor.apk ] || echo "PERINGATAN: luxor.apk tidak ada di $GAMEDIR (salin APK Luxor dan namai luxor.apk)" >> loader_stdout.txt
+          LOADER_ARGS="$(cat loader.args 2>/dev/null)"
+          ./luxorloader libs @ARG@ $LOADER_ARGS >> loader_stdout.txt 2>&1
           echo "exit code: $?" >> loader_stdout.txt
           sleep 2
           type pm_finish >/dev/null 2>&1 && pm_finish
@@ -997,6 +1409,7 @@ jobs:
           sleep 2
           type pm_finish >/dev/null 2>&1 && pm_finish
           EOF_SH
+          echo "--apk luxor.apk --stage 3 --frames 120 --timeout 90" > out/luxor_android/loader.args
           echo "Taruh libmain.so dan libfmodex.so (dari lib/armeabi-v7a di APK) di folder ini. Jangan di-upload ke GitHub." > out/luxor_android/libs/TARUH-LIB-DI-SINI.txt
 
       - name: Buat stub JNI dan skrip peluncur
@@ -1010,7 +1423,7 @@ jobs:
       - name: Kompilasi (armhf)
         run: |
           arm-linux-gnueabihf-gcc -O2 -Wall -Wextra -Wno-missing-field-initializers -o out/luxor_android/elfprobe src/elfprobe.c -ldl
-          arm-linux-gnueabihf-gcc -O2 -Wall -Wextra -Wno-missing-field-initializers -Isrc -o out/luxor_android/luxorloader src/luxorloader.c -ldl -lpthread
+          arm-linux-gnueabihf-gcc -O2 -Wall -Wextra -Wno-missing-field-initializers -Isrc -o out/luxor_android/luxorloader src/luxorloader.c -ldl -lpthread -lm
           file out/luxor_android/luxorloader || true
           echo "--- library yang dibutuhkan:"
           arm-linux-gnueabihf-readelf -d out/luxor_android/luxorloader | grep NEEDED
